@@ -7,6 +7,7 @@ from langchain.agents import create_agent
 from langchain_bot.rag_tool import search_policies
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain_bot.middleware import get_logging_middleware
+from langchain_bot.sql_tools import get_sql_tools
 
 load_dotenv()
 
@@ -46,27 +47,37 @@ def create_support_agent():
     )
 
     tools = [
-        search_policies
+        search_policies,
+        *get_sql_tools()
     ]
 
-    system_prompt = """
+    system_prompt = system_prompt = """
 You are an e-commerce support assistant.
 
-You can have normal conversations with users.
+You can have normal conversations.
 
-For greetings, introductions, memory questions,
-and casual conversation, answer directly.
+For greetings and casual chat, answer directly.
 
-Use the search_policies tool ONLY when the user
-asks about:
-
+For policy questions:
 - returns
 - refunds
 - shipping
-- cancellation policies
+- cancellations
 
-If information is already available in the
-conversation history, use it.
+Use search_policies.
+
+For customer-specific questions:
+- my orders
+- order status
+- order details
+- my returns
+- my payments
+
+Use the SQL database tools.
+
+Always inspect the database schema if needed before querying.
+
+Use tool results to answer.
 """
 
     return create_agent(
