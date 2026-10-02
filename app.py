@@ -1,153 +1,170 @@
 import streamlit as st
 from dotenv import load_dotenv
-
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from uuid import uuid4
+
 from langchain_bot.auth import authenticate_user
+from langchain_bot.agent import get_agent, get_thread_config
+from langchain_bot.rag_tool import initialize_vector_store
+from langchain_bot.thread_store import load_threads, add_thread
 
-
-def get_llm():
-    """
-    Create and return the LLM instance.
-    """
-    return ChatOpenAI(
-        model="gpt-4.1-mini",
-        temperature=0.3
-    )
-
-
-def build_chain(llm):
-    """
-    Build the prompt template and connect it to the LLM.
-    """
-    prompt = ChatPromptTemplate.from_messages([
-        (
-            "system",
-            "You are a concise, helpful assistant. "
-            "Use prior chat history to stay on context."
-        ),
-        MessagesPlaceholder(variable_name="history"),
-        ("human", "{input}")
-    ])
-
-    return prompt | llm
-
-
-# def init_session():
-#     """
-#     Initialize chat history in session state.
-#     """
-#     if "messages" not in st.session_state:
-#         st.session_state.messages = [
-#             AIMessage(content="Hi! Ask me anything.")
-#         ]
 
 def init_session():
-    st.session_state.setdefault("conversations", {})
-    st.session_state.setdefault("messages", [])
-    st.session_state.setdefault("user_email", None)
-    st.session_state.setdefault("user_role", None)
-    st.session_state.setdefault("conversation_id", None)
+    """Initialize Streamlit session state."""
+
+    st.session_state.setdefault(
+        "user_email",
+        None
+    )
+
+    st.session_state.setdefault(
+        "user_role",
+        None
+    )
+
+    st.session_state.setdefault(
+        "conversation_id",
+        None
+    )
+
+    st.session_state.setdefault(
+        "vector_store_ready",
+        False
+    )
 
 
 def render_history():
     """
-    Render all messages stored in session state.
+    Load and render conversation history from
+    LangGraph checkpointer.
     """
-    for msg in st.session_state.messages:
-        role = "user" if isinstance(msg, HumanMessage) else "assistant"
 
-        with st.chat_message(role):
-            st.markdown(msg.content)
+    if (
+        not st.session_state.user_email
+        or not st.session_state.conversation_id
+    ):
+        return
+
+    config = get_thread_config(
+        st.session_state.user_email,
+        st.session_state.conversation_id
+    )
+
+    snapshot = get_agent().get_state(config)
+
+    messages = snapshot.values.get(
+        "messages",
+        []
+    )
+
+    for msg in messages:
+
+        # Human message
+        if msg.type == "human":
+
+            with st.chat_message("user"):
+                st.markdown(msg.content)
+
+        # AI message
+        elif msg.type == "ai" and msg.content:
+
+            with st.chat_message("assistant"):
+                st.markdown(msg.content)
 
 
 def start_new_conversation():
+    """
+    Create a new conversation thread.
+    Only the conversation ID is stored in JSON.
+    """
+
     conversation_id = str(uuid4())
 
-    messages = [
-        AIMessage(content="Hi! Ask me anything.")
-    ]
-
-    st.session_state.conversation_id = conversation_id
-    st.session_state.messages = messages
-
-    st.session_state.conversations[
+    add_thread(
+        st.session_state.user_email,
         conversation_id
-    ] = messages.copy()
-
-
-def load_conversation(conv_id):
-    if conv_id in st.session_state.conversations:
-
-        st.session_state.conversation_id = conv_id
-
-        st.session_state.messages = (
-            st.session_state.conversations[conv_id].copy()
-        )
-
-def chat_round(llm, user_input):
-    """
-    Execute one chat round.
-    """
-    print("\n" + "=" * 50)
-    print("USER INPUT")
-    print("=" * 50)
-    print(user_input)
-
-    st.session_state.messages.append(
-        HumanMessage(content=user_input)
     )
 
-    print("\nCURRENT HISTORY")
-    print("=" * 50)
+    st.session_state.conversation_id = (
+        conversation_id
+    )
 
-    for i, msg in enumerate(st.session_state.messages):
-        print(f"{i + 1}. {msg.__class__.__name__}: {msg.content}")
 
-    chain = build_chain(llm)
+def chat_round(user_input):
+    """
+    Send a new user message to the agent.
 
-    payload = {
-        "input": user_input,
-        "history": st.session_state.messages
-    }
+    Conversation history is managed by the
+    LangGraph checkpointer.
+    """
 
-    response = chain.invoke(payload)
-    st.session_state.messages.append(response)
-    
-    if st.session_state.conversation_id:
-        st.session_state.conversations[
-            st.session_state.conversation_id
-        ] = st.session_state.messages.copy()
+    config = get_thread_config(
+        st.session_state.user_email,
+        st.session_state.conversation_id
+    )
 
+    get_agent().invoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": user_input
+                }
+            ]
+        },
+        config=config
+    )
 
 
 def main():
+
     st.set_page_config(
         page_title="LangChain Bot",
         page_icon="🤖"
     )
 
+    load_dotenv()
+
     st.title("LangChain Bot")
     st.caption(
-        "A simple conversational assistant built with LangChain and Streamlit."
+        "A conversational e-commerce support assistant."
     )
-
-    load_dotenv()
 
     init_session()
 
-    user_email = st.session_state.user_email
+    # --------------------------------------------------
+    # INITIALIZE KNOWLEDGE BASE
+    # --------------------------------------------------
 
-    # ------------------------
-    # LOGIN SCREEN
-    # ------------------------
-    if not user_email:
+    if not st.session_state.vector_store_ready:
+
+        try:
+
+            with st.spinner(
+                "Initializing knowledge base..."
+            ):
+                initialize_vector_store()
+
+            st.session_state.vector_store_ready = True
+
+        except Exception as e:
+
+            st.error(
+                f"Knowledge base initialization failed: {e}"
+            )
+
+            st.stop()
+
+    # --------------------------------------------------
+    # LOGIN
+    # --------------------------------------------------
+
+    if not st.session_state.user_email:
 
         with st.form("login_form"):
 
-            email = st.text_input("Email")
+            email = st.text_input(
+                "Email"
+            )
 
             password = st.text_input(
                 "Password",
@@ -156,7 +173,10 @@ def main():
 
             role = st.selectbox(
                 "Role",
-                ["customer", "admin"]
+                [
+                    "customer",
+                    "admin"
+                ]
             )
 
             submitted = st.form_submit_button(
@@ -173,6 +193,7 @@ def main():
 
                 if user:
 
+                    # Save logged-in user
                     st.session_state.user_email = (
                         user["email"]
                     )
@@ -181,8 +202,31 @@ def main():
                         user["role"]
                     )
 
-                    # Step 6.2.7
-                    start_new_conversation()
+                    # Load existing threads
+                    threads = load_threads(
+                        user["email"]
+                    )
+
+                    if threads:
+
+                        # Open first existing conversation
+                        st.session_state.conversation_id = (
+                            threads[0]["id"]
+                        )
+
+                    else:
+
+                        # First login -> create thread
+                        conversation_id = str(uuid4())
+
+                        add_thread(
+                            user["email"],
+                            conversation_id
+                        )
+
+                        st.session_state.conversation_id = (
+                            conversation_id
+                        )
 
                     st.success(
                         f"Welcome {user['full_name']}"
@@ -191,65 +235,95 @@ def main():
                     st.rerun()
 
                 else:
+
                     st.error(
                         "Invalid email/password"
                     )
 
         return
 
-    # ------------------------
+    # --------------------------------------------------
     # SIDEBAR
-    # ------------------------
+    # --------------------------------------------------
+
     st.sidebar.header("Conversations")
 
+    # Start new conversation
     if st.sidebar.button(
         "Start new conversation"
     ):
+
         start_new_conversation()
         st.rerun()
 
-    conversation_ids = list(
-        st.session_state.conversations.keys()
+    # Load thread IDs for current user
+    threads = load_threads(
+        st.session_state.user_email
     )
 
+    conversation_ids = [
+        thread["id"]
+        for thread in threads
+    ]
+
     if conversation_ids:
+
+        current_index = 0
+
+        if (
+            st.session_state.conversation_id
+            in conversation_ids
+        ):
+            current_index = conversation_ids.index(
+                st.session_state.conversation_id
+            )
 
         selected_conv = st.sidebar.selectbox(
             "Select Conversation",
             conversation_ids,
-            index=conversation_ids.index(
-                st.session_state.conversation_id
-            )
-            if st.session_state.conversation_id
-            in conversation_ids
-            else 0
+            index=current_index
         )
 
+        # User selected another conversation
         if (
             selected_conv
             != st.session_state.conversation_id
         ):
-            load_conversation(selected_conv)
+
+            st.session_state.conversation_id = (
+                selected_conv
+            )
+
             st.rerun()
 
     else:
-        st.sidebar.selectbox(
-            "Select Conversation",
-            ["(no threads yet)"]
+
+        st.sidebar.write(
+            "(no threads yet)"
         )
 
-    # ------------------------
+    # --------------------------------------------------
     # USER INFO
-    # ------------------------
+    # --------------------------------------------------
+
     st.info(
         f"Logged in as: "
         f"{st.session_state.user_email} | "
-        f"Role: {st.session_state.user_role} | "
+        f"Role: "
+        f"{st.session_state.user_role} | "
         f"Conversation: "
         f"{st.session_state.conversation_id or '—'}"
     )
 
+    # --------------------------------------------------
+    # CHAT HISTORY
+    # --------------------------------------------------
+
     render_history()
+
+    # --------------------------------------------------
+    # CHAT INPUT
+    # --------------------------------------------------
 
     prompt = st.chat_input(
         "Ask a question"
@@ -257,14 +331,11 @@ def main():
 
     if prompt:
 
-        llm = get_llm()
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                chat_round(
-                    llm,
-                    prompt
-                )
+        with st.spinner("Thinking..."):
+            chat_round(prompt)
 
         st.rerun()
 
