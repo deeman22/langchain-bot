@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from uuid import uuid4
+from langchain_bot.auth import authenticate_user
 
 
 def get_llm():
@@ -33,14 +35,21 @@ def build_chain(llm):
     return prompt | llm
 
 
+# def init_session():
+#     """
+#     Initialize chat history in session state.
+#     """
+#     if "messages" not in st.session_state:
+#         st.session_state.messages = [
+#             AIMessage(content="Hi! Ask me anything.")
+#         ]
+
 def init_session():
-    """
-    Initialize chat history in session state.
-    """
-    if "messages" not in st.session_state:
-        st.session_state.messages = [
-            AIMessage(content="Hi! Ask me anything.")
-        ]
+    st.session_state.setdefault("conversations", {})
+    st.session_state.setdefault("messages", [])
+    st.session_state.setdefault("user_email", None)
+    st.session_state.setdefault("user_role", None)
+    st.session_state.setdefault("conversation_id", None)
 
 
 def render_history():
@@ -53,6 +62,30 @@ def render_history():
         with st.chat_message(role):
             st.markdown(msg.content)
 
+
+def start_new_conversation():
+    conversation_id = str(uuid4())
+
+    messages = [
+        AIMessage(content="Hi! Ask me anything.")
+    ]
+
+    st.session_state.conversation_id = conversation_id
+    st.session_state.messages = messages
+
+    st.session_state.conversations[
+        conversation_id
+    ] = messages.copy()
+
+
+def load_conversation(conv_id):
+    if conv_id in st.session_state.conversations:
+
+        st.session_state.conversation_id = conv_id
+
+        st.session_state.messages = (
+            st.session_state.conversations[conv_id].copy()
+        )
 
 def chat_round(llm, user_input):
     """
@@ -80,25 +113,13 @@ def chat_round(llm, user_input):
         "history": st.session_state.messages
     }
 
-    # print("\nCHAIN INPUT")
-    # print("=" * 50)
-    # print(payload)
-
     response = chain.invoke(payload)
-
-    # print("\nLLM RESPONSE")
-    # print("=" * 50)
-    # print(response.content)
-
     st.session_state.messages.append(response)
-
-    # print("\nUPDATED HISTORY")
-    # print("=" * 50)
-
-    # for i, msg in enumerate(st.session_state.messages):
-    #     print(f"{i + 1}. {msg.__class__.__name__}: {msg.content}")
-
-    # print("=" * 50 + "\n")
+    
+    if st.session_state.conversation_id:
+        st.session_state.conversations[
+            st.session_state.conversation_id
+        ] = st.session_state.messages.copy()
 
 
 
@@ -109,21 +130,141 @@ def main():
     )
 
     st.title("LangChain Bot")
-    st.caption("A simple conversational assistant built with LangChain and Streamlit.")
+    st.caption(
+        "A simple conversational assistant built with LangChain and Streamlit."
+    )
 
     load_dotenv()
 
     init_session()
+
+    user_email = st.session_state.user_email
+
+    # ------------------------
+    # LOGIN SCREEN
+    # ------------------------
+    if not user_email:
+
+        with st.form("login_form"):
+
+            email = st.text_input("Email")
+
+            password = st.text_input(
+                "Password",
+                type="password"
+            )
+
+            role = st.selectbox(
+                "Role",
+                ["customer", "admin"]
+            )
+
+            submitted = st.form_submit_button(
+                "Login"
+            )
+
+            if submitted:
+
+                user = authenticate_user(
+                    email=email,
+                    password=password,
+                    role=role
+                )
+
+                if user:
+
+                    st.session_state.user_email = (
+                        user["email"]
+                    )
+
+                    st.session_state.user_role = (
+                        user["role"]
+                    )
+
+                    # Step 6.2.7
+                    start_new_conversation()
+
+                    st.success(
+                        f"Welcome {user['full_name']}"
+                    )
+
+                    st.rerun()
+
+                else:
+                    st.error(
+                        "Invalid email/password"
+                    )
+
+        return
+
+    # ------------------------
+    # SIDEBAR
+    # ------------------------
+    st.sidebar.header("Conversations")
+
+    if st.sidebar.button(
+        "Start new conversation"
+    ):
+        start_new_conversation()
+        st.rerun()
+
+    conversation_ids = list(
+        st.session_state.conversations.keys()
+    )
+
+    if conversation_ids:
+
+        selected_conv = st.sidebar.selectbox(
+            "Select Conversation",
+            conversation_ids,
+            index=conversation_ids.index(
+                st.session_state.conversation_id
+            )
+            if st.session_state.conversation_id
+            in conversation_ids
+            else 0
+        )
+
+        if (
+            selected_conv
+            != st.session_state.conversation_id
+        ):
+            load_conversation(selected_conv)
+            st.rerun()
+
+    else:
+        st.sidebar.selectbox(
+            "Select Conversation",
+            ["(no threads yet)"]
+        )
+
+    # ------------------------
+    # USER INFO
+    # ------------------------
+    st.info(
+        f"Logged in as: "
+        f"{st.session_state.user_email} | "
+        f"Role: {st.session_state.user_role} | "
+        f"Conversation: "
+        f"{st.session_state.conversation_id or '—'}"
+    )
+
     render_history()
 
-    prompt = st.chat_input("Ask a question")
+    prompt = st.chat_input(
+        "Ask a question"
+    )
 
     if prompt:
+
         llm = get_llm()
 
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                chat_round(llm, prompt)
+                chat_round(
+                    llm,
+                    prompt
+                )
 
         st.rerun()
 
