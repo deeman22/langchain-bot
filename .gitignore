@@ -12,3 +12,5 @@ wheels/
 uv*
 .claude/*
 .agents/*
+credentials*
+token*

@@ -3,9 +3,13 @@ from dotenv import load_dotenv
 from uuid import uuid4
 
 from langchain_bot.auth import authenticate_user
-from langchain_bot.agent import get_agent, get_thread_config
+from langchain_bot.agent import get_agent,get_thread_config,reset_agent
 from langchain_bot.rag_tool import initialize_vector_store
 from langchain_bot.thread_store import load_threads, add_thread
+from langchain_bot.gmail_tools import initialize_gmail,is_gmail_available
+from langchain_bot.context import SessionContext
+
+
 
 
 def init_session():
@@ -101,6 +105,12 @@ def chat_round(user_input):
         st.session_state.user_email,
         st.session_state.conversation_id
     )
+    
+    context = SessionContext(
+        user_email=st.session_state.user_email,
+        conversation_id=st.session_state.conversation_id,
+        role=st.session_state.user_role
+    )
 
     get_agent().invoke(
         {
@@ -111,7 +121,8 @@ def chat_round(user_input):
                 }
             ]
         },
-        config=config
+        config=config,
+        context=context
     )
 
 
@@ -153,6 +164,13 @@ def main():
             )
 
             st.stop()
+
+
+    # GMAIL READINESS
+    gmail_ready = initialize_gmail()
+
+    if gmail_ready:
+        reset_agent()
 
     # --------------------------------------------------
     # LOGIN
@@ -248,6 +266,17 @@ def main():
 
     st.sidebar.header("Conversations")
 
+    #Gmail
+    if is_gmail_available():
+        st.sidebar.success(
+            "📧 Gmail Enabled"
+        )
+    else:
+        st.sidebar.warning(
+            "📧 Gmail Not Configured"
+        )
+    
+    
     # Start new conversation
     if st.sidebar.button(
         "Start new conversation"

@@ -8,11 +8,22 @@ from langchain_bot.rag_tool import search_policies
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain_bot.middleware import get_logging_middleware
 from langchain_bot.sql_tools import get_sql_tools
+from langchain_bot.gmail_tools import get_gmail_tools
+from langchain_bot.action_tools import get_action_tools
+from langchain_bot.context import SessionContext
+from langchain.tools import ToolRuntime, tool
 
 load_dotenv()
 
 _agent = None
 _checkpointer = None
+
+# @tool(description="Return the current authenticated user")
+# def who_am_i(runtime: ToolRuntime[SessionContext]) -> str:
+#     return (
+#         f"email={runtime.context.user_email}, "
+#         f"role={runtime.context.role}"
+#     )
 
 def get_checkpointer():
     global _checkpointer
@@ -48,41 +59,74 @@ def create_support_agent():
 
     tools = [
         search_policies,
-        *get_sql_tools()
+        *get_sql_tools(),
+        *get_gmail_tools(),
+        *get_action_tools()
     ]
 
-    system_prompt = system_prompt = """
+    system_prompt = system_prompt = system_prompt = """
 You are an e-commerce support assistant.
 
-You can have normal conversations.
+You can have normal conversations with users.
 
-For greetings and casual chat, answer directly.
+For greetings, introductions, memory questions,
+and casual conversation, answer directly.
 
-For policy questions:
+Capability 1: Policy Knowledge
+
+Use search_policies for questions about:
+
 - returns
 - refunds
 - shipping
 - cancellations
+- company policies
+- FAQs
 
-Use search_policies.
+Always use the tool when policy information is needed.
 
-For customer-specific questions:
+
+Capability 2: Customer Order Data
+
+Use SQL database tools for questions about:
+
 - my orders
 - order status
 - order details
 - my returns
 - my payments
+- customer purchases
 
-Use the SQL database tools.
+Always inspect the database schema when needed
+before querying.
 
-Always inspect the database schema if needed before querying.
+Use tool results to answer customer-specific questions.
 
-Use tool results to answer.
+
+Capability 3: Email Notifications
+
+When a customer requests confirmation emails,
+return requests, cancellation requests,
+refund confirmations, or support acknowledgements,
+use the Gmail tool when available.
+
+Only send emails when the user explicitly asks
+for an email or when a confirmation email is required.
+
+
+General Rules
+
+- Use tool results as the source of truth.
+- Do not invent order information.
+- Do not invent policy information.
+- If information is unavailable, say so.
+- Be concise and helpful.
 """
 
     return create_agent(
         model=llm,
         tools=tools,
+        context_schema=SessionContext,
         system_prompt=system_prompt,
         middleware=get_logging_middleware(),
         checkpointer=get_checkpointer()
@@ -101,6 +145,9 @@ def get_agent():
 
     return _agent
 
+def reset_agent():
+    global _agent
+    _agent = None
 
 def get_thread_config(
     user_email: str,
@@ -118,4 +165,5 @@ __all__ = [
     "create_support_agent",
     "get_agent",
     "get_thread_config",
+    "reset_agent"
 ]
