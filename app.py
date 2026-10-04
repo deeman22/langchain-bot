@@ -9,6 +9,7 @@ from langchain_bot.thread_store import load_threads, add_thread
 from langchain_bot.gmail_tools import initialize_gmail,is_gmail_available
 from langchain_bot.context import SessionContext
 
+from langchain_bot.hitl_utils import handle_interrupt,get_pending_action_for_thread
 
 
 
@@ -93,26 +94,79 @@ def start_new_conversation():
     )
 
 
+# def chat_round(user_input):
+#     """
+#     Send a new user message to the agent.
+
+#     Conversation history is managed by the
+#     LangGraph checkpointer.
+#     """
+
+#     config = get_thread_config(
+#         st.session_state.user_email,
+#         st.session_state.conversation_id
+#     )
+    
+#     context = SessionContext(
+#         user_email=st.session_state.user_email,
+#         conversation_id=st.session_state.conversation_id,
+#         role=st.session_state.user_role
+#     )
+
+#     get_agent().invoke(
+#         {
+#             "messages": [
+#                 {
+#                     "role": "user",
+#                     "content": user_input
+#                 }
+#             ]
+#         },
+#         config=config,
+#         context=context
+#     )
+
 def chat_round(user_input):
-    """
-    Send a new user message to the agent.
 
-    Conversation history is managed by the
-    LangGraph checkpointer.
-    """
+    user_email = (
+        st.session_state.user_email
+    )
 
-    config = get_thread_config(
-        st.session_state.user_email,
+    conversation_id = (
         st.session_state.conversation_id
     )
-    
+
+    thread_id = (
+        f"{user_email}:{conversation_id}"
+    )
+
+    # Do not send another message while
+    # this thread is waiting for admin review.
+    pending = (
+        get_pending_action_for_thread(
+            thread_id
+        )
+    )
+
+    if pending:
+
+        return (
+            "⏳ This conversation already has "
+            "an action waiting for admin approval."
+        )
+
+    config = get_thread_config(
+        user_email,
+        conversation_id
+    )
+
     context = SessionContext(
-        user_email=st.session_state.user_email,
-        conversation_id=st.session_state.conversation_id,
+        user_email=user_email,
+        conversation_id=conversation_id,
         role=st.session_state.user_role
     )
 
-    get_agent().invoke(
+    result = get_agent().invoke(
         {
             "messages": [
                 {
@@ -123,6 +177,12 @@ def chat_round(user_input):
         },
         config=config,
         context=context
+    )
+
+    return handle_interrupt(
+        result=result,
+        user_email=user_email,
+        conversation_id=conversation_id
     )
 
 
@@ -349,13 +409,51 @@ def main():
     # --------------------------------------------------
 
     render_history()
+    
+    # --------------------------------------------------
+    # HITL STATUS
+    # --------------------------------------------------
+
+    thread_id = (
+        f"{st.session_state.user_email}:"
+        f"{st.session_state.conversation_id}"
+    )
+
+    pending_action = (
+        get_pending_action_for_thread(
+            thread_id
+        )
+    )
+
+    if pending_action:
+
+        st.warning(
+            "⏳ Waiting for admin approval\n\n"
+            f"Action: {pending_action['action_type']}  \n"
+            f"Order: #{pending_action['order_id']}"
+        )
+
+
+    if "hitl_notice" in st.session_state:
+
+        st.info(
+            st.session_state.pop(
+                "hitl_notice"
+            )
+        )
 
     # --------------------------------------------------
     # CHAT INPUT
     # --------------------------------------------------
 
+    ##
     prompt = st.chat_input(
-        "Ask a question"
+        (
+            "Waiting for admin approval..."
+            if pending_action
+            else "Ask a question"
+        ),
+        disabled=bool(pending_action)
     )
 
     if prompt:
@@ -364,7 +462,16 @@ def main():
             st.markdown(prompt)
 
         with st.spinner("Thinking..."):
-            chat_round(prompt)
+
+            notice = chat_round(
+                prompt
+            )
+
+        if notice:
+
+            st.session_state.hitl_notice = (
+                notice
+            )
 
         st.rerun()
 
